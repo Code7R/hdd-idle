@@ -1,0 +1,243 @@
+#!/usr/bin/perl
+### BEGIN INIT INFO
+# Provides:          hdd-idle
+# Required-Start:    $local_fs 
+# Required-Stop:     $local_fs
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: HDD suspender
+### END INIT INFO
+#
+# Yet Another Init Script with program code embedded, therefore written
+# completely in Perl.
+#
+# This script is made for situations where automatic switch to the ATA sleep
+# mode does not work, e.g. because some other daemon periodically connects and
+# retrieves unrelated information like temperature readings. Most HDD models
+# care only about data transfers (ignoring unrelated actions) and go to sleep
+# after no data was transfered in a certain period, but some HDDs are disturbed
+# by them and therefore never go to sleep mode.
+#
+# The simple daemon program implemented below just runs in background and
+# watches the data statistics of IDE/SCSI/SATA harddisks from Linux kernel
+# perspective. When unchanged for a certain period the script will try to
+# force the suspend mode using the hdparm utility, and do that exactly one time.
+#
+# Copyright (c) 2006-2009 Eduard Bloch <blade@debian.org>
+# All rights reserved.
+# 
+# Redistribution and use in source and binary forms, with or without
+# modification, are permitted provided that the following conditions
+# are met:
+# 1. Redistributions of source code must retain the above copyright
+#    notice, this list of conditions and the following disclaimer.
+# 2. Redistributions in binary form must reproduce the above copyright
+#    notice, this list of conditions and the following disclaimer in the
+#    documentation and/or other materials provided with the distribution.
+# 3. Neither the name of the author nor the names of its contributors
+#    may be used to endorse or promote products derived from this software
+#    without specific prior written permission.
+# 
+# THIS SOFTWARE IS PROVIDED BY THE AUTHOR ``AS IS'' AND ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE DISCLAIMED.  IN NO
+# EVENT SHALL THE AUTHOR OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
+# INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA,
+# OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF
+# LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+# NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE,
+# EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+my $pidfile="/var/run/hdd-idle";
+my $statfile="/proc/diskstats";
+my $interval=521;
+my $debug=$ENV{HDDSDEBUG};
+my $dbgout=STDOUT;
+my $wakeup_count;
+
+my $kerver=`uname -r`;
+
+# old kernels did strange stuff, disk permanently woke up immediately
+#die "EBADSATA\n" if 0==system("dpkg", "--compare-versions", $kerver,
+#   "lt", "2.6.30-rc4");
+
+use strict;
+sub _start;
+sub _stop;
+sub _halt;
+sub _idleloop;
+sub _getpid;
+sub _getDiskDataPairs;
+
+$interval=$ENV{HDDSUSPINT} if defined($ENV{HDDSUSPINT});
+
+if($ARGV[0] eq "start")
+{
+   _start;
+}
+elsif ($ARGV[0] eq "stop")
+{
+   if( ! _stop )
+   {
+      print "Not running or not owned.\n";
+      exit 1;
+   }
+   exit 0;
+}
+elsif($ARGV[0] eq "restart" || $ARGV[0] eq "reload"  || $ARGV[0] eq "force-reload")
+{
+   _stop;
+   _start;
+}
+elsif($ARGV[0] eq "debugrun")
+{
+   _idleloop;
+}
+elsif($ARGV[0] eq "halt")
+{
+   _halt;
+}
+else
+{
+   die "Unknown command, specify start or stop.\n";
+}
+
+sub _getpid
+{
+   my $ret;
+   if(open(fd, "<$pidfile"))
+   {
+      $ret = <fd>;
+      close fd;
+   }
+   return $ret if $ret && kill 0, $ret;
+
+   return undef;
+}
+
+sub _halt
+{
+   # Dirty Little Helper
+   my %disks=_getDiskDataPairs;
+   system "hdparm -C /dev/$_ | grep -q active && hdparm -S0 /dev/$_" foreach(keys %disks);
+}
+
+sub _stop {
+
+   my $pid=_getpid;
+   if(defined($pid))
+   {
+      kill 9, $pid || die "Couldn't stop $pid\n";
+      unlink $pidfile;
+      return 1;
+   }
+   return 0;
+}
+
+sub _start {
+
+   print "Starting HDD Idle Daemon: ";
+   {
+      my %disks = _getDiskDataPairs;
+      my $ndisks=0;
+      foreach(sort keys %disks)
+      {
+         my $oput = `hdparm -C /dev/$_ 2>&1`;
+         if($oput =~/drive.state.is:\s+(standby|idle|active)/m)
+         {
+            $ndisks++;
+            syswrite STDOUT, $_.", ";
+         }
+      }
+      die "No manageable disks found.\n" if(!$ndisks);
+      syswrite STDOUT, "ok.\n";
+   }
+
+
+   my $oldpid=_getpid;
+   if($oldpid)
+   {
+      die "$0 is already running as PID $oldpid, not starting.\n";
+   }
+   my $pid = fork();
+   if ($pid < 0) {
+      die("fork() failed");
+   }
+   if ($pid > 0) {
+      # parent
+      exit 0;
+   }
+
+   #$0 = "HDD Idle Daemon";
+   open(fd, ">$pidfile") || die "Cannot create pidfile\n";
+   print fd $$;
+   close(fd);
+
+   if(!$debug)
+   {
+      close(STDIN);
+      close(STDOUT);
+      close($dbgout);
+      close(STDERR);
+   }
+
+   _idleloop;
+
+}
+
+sub _getDiskDataPairs 
+{
+   my %ret;
+   die "Could not read $statfile\n" if ! -r $statfile;
+   open(st, $statfile);
+   while(<st>) 
+   {
+      if((my $disk, my$t,my $data)=(/^\s+\d+\s+\d+\s+((sd|hd)[a-z]+)\s(.*)/))
+      {
+         $ret{$disk}=$data;
+      }
+   }
+   close(st);
+   return %ret;
+}
+
+sub _idleloop {
+   my %seenstat;
+   my %suspstat;
+
+   do {
+
+      # suspend-to-ram might confuse us, i.e. no IO happened but disks are up again
+      open(st, "</sys/power/wakeup_count") or return;
+      my $newWcount = int(<st>);
+      undef %seenstat if ($newWcount != $wakeup_count);
+      $wakeup_count = $newWcount;
+
+      my %gdp = _getDiskDataPairs;
+      foreach my $disk (keys(%gdp))
+      {
+         my $data=$gdp{$disk};
+         syswrite($dbgout, "$disk, $data vs. $seenstat{$disk}\n") if $debug;
+         if($seenstat{$disk} eq $data && $suspstat{$disk} ne $data)
+         {
+            # disk was halted and data stats not changed since then. Still 
+            # possible that something woke up the disk in the meantime 
+            # without changing the disk stats (like temperature or config 
+            # reading by the user) but that's user's problem. Suspending
+            # such disks calls for trouble, they might start to wake up and
+            # halt short afterwards in a loop when some software does the
+            # actions in the background (like an old unpatched version of
+            # hddtemp polled by collectd).
+
+            $suspstat{$disk} = $data;
+            syswrite($dbgout, "Spinning down: $disk\n") if $debug;
+            system "hdparm -y /dev/$disk";
+            sleep 17; # or the SATA driver sometimes does weird things and resets the link for no apparent reason, awaking the drive
+         }
+
+         $seenstat{$disk}=$data;
+      }
+   }
+   while(sleep $interval);
+}
