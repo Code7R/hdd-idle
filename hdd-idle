@@ -57,28 +57,6 @@ sub _getDiskDataPairs;
 
 $interval=$ENV{HDDSUSPINT} if defined($ENV{HDDSUSPINT});
 
-sub _start {
-
-   print "Configuring HDD Idle Daemon:";
-   {
-      my %disks = _getDiskDataPairs;
-      my $ndisks=0;
-      foreach(sort keys %disks)
-      {
-         my $oput = `hdparm -C /dev/$_ 2>&1`;
-         if($oput =~/drive.state.is:\s+(standby|idle|active)/m)
-         {
-            $ndisks++;
-            syswrite STDOUT, " ".$_;
-         }
-      }
-      die " no manageable disks found.\n" if(!$ndisks);
-      syswrite STDOUT, "; OKAY, check period: $interval seconds.\n";
-   }
-
-   _idleloop;
-}
-
 sub _getDiskDataPairs
 {
    my %ret;
@@ -95,7 +73,8 @@ sub _getDiskDataPairs
    return %ret;
 }
 
-sub _idleloop {
+sub _idleloop
+{
    my %seenstat;
    my %suspstat;
 
@@ -135,5 +114,5 @@ sub _idleloop {
    while(sleep $interval);
 }
 
-_start()
+_idleloop()
 
