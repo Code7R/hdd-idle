@@ -64,9 +64,11 @@ sub _getDiskDataPairs
    open(st, $statfile);
    while(<st>) 
    {
-      if((my $disk, my $t,my $data)=(/^\s+\d+\s+\d+\s+((sd|hd)[a-z]+)\s(.*)/))
+      if((my $partition, my $drive, my $pfx, my $t,my $data)=(/^\s+\d+\s+\d+\s+(((sd|hd)\w*?[a-z]+)(\d+))\s(.*)/))
       {
-         $ret{$disk}=$data;
+              print "$drive, $partition, $t, $data\n" if $debug;
+              $ret{$drive}.=$data;
+              print "refval($drive) -> $ret{$drive}\n" if $debug;
       }
    }
    close(st);
@@ -113,6 +115,8 @@ sub _idleloop
    }
    while(sleep $interval);
 }
+
+_getDiskDataPairs() if $debug;
 
 _idleloop()
 
