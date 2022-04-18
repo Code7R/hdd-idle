@@ -1,0 +1,13 @@
+[Unit]
+Description=HDD no-activity suspender
+After=local-fs.target
+
+[Service]
+# suspend disks after 4-5 seconds of inactivity
+Environment=HDDSUSPINT=500
+ExecStart=/usr/local/sbin/hdd-idle
+Type=simple
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
