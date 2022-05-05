@@ -42,7 +42,7 @@ my $statfile="/proc/diskstats";
 my $interval=521;
 my $debug=$ENV{HDDSDEBUG};
 my $dbgout=STDOUT;
-my $wakeup_count;
+my $wakeup_count = -1;
 
 my $kerver=`uname -r`;
 
@@ -77,23 +77,33 @@ sub _getDiskDataPairs
 
 sub _idleloop
 {
-   my %seenstat;
-   my %suspstat;
+   my %gdpOld;
+   my %gdpWhenSuspended;
 
-   do {
-
+   do
+   {
       # suspend-to-ram might confuse us, i.e. no IO happened but disks are up again
-      open(st, "</sys/power/wakeup_count") or return;
+      open(st, "</sys/power/suspend_stats/success") or return;
       my $newWcount = int(<st>);
-      undef %seenstat if ($newWcount != $wakeup_count);
+      print "wakeup_count now: $newWcount (before: $wakeup_count)\n" if $debug;
+      if ($newWcount != $wakeup_count)
+      {
+              undef %gdpOld;
+              undef %gdpWhenSuspended;
+              syswrite($dbgout, "wakeup_count changed from $wakeup_count to $newWcount, reset the stats.\n") if $debug;
+      }
       $wakeup_count = $newWcount;
 
       my %gdp = _getDiskDataPairs;
       foreach my $disk (keys(%gdp))
       {
-         my $data=$gdp{$disk};
-         syswrite($dbgout, "$disk, $data vs. $seenstat{$disk}\n") if $debug;
-         if($seenstat{$disk} eq $data && $suspstat{$disk} ne $data)
+         my $data = $gdp{$disk};
+         next if $data eq $gdpWhenSuspended{$disk};
+
+         my $dataOld = $gdpOld{$disk};
+         syswrite($dbgout, "$disk, $data vs. $dataOld\n") if $debug;
+
+         if($dataOld eq $data)
          {
             # disk was halted and data stats not changed since then. Still 
             # possible that something woke up the disk in the meantime 
@@ -104,19 +114,19 @@ sub _idleloop
             # actions in the background (like an old unpatched version of
             # hddtemp polled by collectd).
 
-            $suspstat{$disk} = $data;
             syswrite($dbgout, "Spinning down: $disk\n") if $debug;
             system "hdparm -y /dev/$disk";
-            sleep 17; # or the SATA driver sometimes does weird things and resets the link for no apparent reason, awaking the drive
+            $gdpWhenSuspended{$disk} = $data;
+            sleep 7; # or the SATA driver sometimes does weird things and resets the link for no apparent reason, awaking the drive
          }
-
-         $seenstat{$disk}=$data;
       }
+
+      %gdpOld = %gdp;
    }
    while(sleep $interval);
 }
 
-_getDiskDataPairs() if $debug;
+# _getDiskDataPairs() if $debug;
 
 _idleloop()
 

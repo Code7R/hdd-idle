@@ -4,7 +4,8 @@ After=local-fs.target
 
 [Service]
 # suspend disks after roughly 4 minutes of inactivity
-Environment=HDDSUSPINT=250
+# remove HDDSDEBUG assignment to get the logs silent
+Environment=HDDSUSPINT=250 HDDSDEBUG=1
 ExecStart=/usr/local/sbin/hdd-idle
 Type=simple
 Restart=on-failure
